@@ -1,0 +1,38 @@
+# CourseLens AI
+
+CourseLens AI is a Python-based AI course tutor that helps students study from their own lecture slides, notes, and practice exams.
+
+## Problem
+
+Students often have many lecture slides, notes, and practice exams, but studying from them is slow and unorganized. Generic AI tools can answer questions, but they are not always grounded in the actual course material.
+
+## Solution
+
+CourseLens AI will allow students to upload course documents, ask questions, receive citation-based explanations, generate quizzes, and track weak areas.
+
+## Planned Features
+
+- Create courses
+- Upload PDF course materials
+- Extract text from PDFs
+- Chunk documents
+- Store embeddings in a vector database
+- Ask questions with citations
+- Generate quizzes
+- Track weak areas
+- Simple Streamlit frontend
+
+## Tech Stack
+
+- Python
+- FastAPI
+- Pydantic
+- Chroma
+- LlamaIndex or custom RAG
+- Streamlit
+- SQLite
+- Docker
+
+## Current Status
+
+Week 1: Building the FastAPI backend and course creation system.
