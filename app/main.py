@@ -1,25 +1,14 @@
 from fastapi import FastAPI, HTTPException #framework, HTTPException handles error responses
 
-from pydantic import BaseModel  #handles data validation ( checks right fields and types )
-
 from uuid import uuid4   # generates a random unique ID for each course 
 
-app = FastAPI(title="CourseStudy AI")   # name of app
+from app.schemas import CourseCreate, Course #import CourseCreate and Course from schemas.py file
+
+app = FastAPI(title="CourseLens AI")   # name of app
 
 
-# creates a course ( name is required and description is optional) - user sends
-class CourseCreate(BaseModel):
-    name: str
-    description: str | None = None   # "None" means description can be optional 
 
-
-# API returns after a course is created. Same as CourseCreate but with ID field 
-class Course(BaseModel):
-    id: str
-    name: str
-    description: str | None = None
-
-# memory that maps course ID to course obejects 
+# memory that maps course ID to course objects 
 courses: dict[str, Course] = {}   #*Note: data resets every time server restarts 
 
 # ENDPOINTS
@@ -43,7 +32,7 @@ def create_course(course_data: CourseCreate):
     courses[course_id] = course   #save the course in memory ( local )
     return course           # return the new course ( with ID )
 
-# retrivies all courses currently stored
+# retrieves all courses currently stored
 @app.get("/courses")
 def get_courses():
     return list(courses.values())   # get all course objects from the dictionary ( converts into JSON array )
