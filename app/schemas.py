@@ -10,3 +10,11 @@ class Course(BaseModel):
     id: str
     name: str
     description: str | None = None
+
+# what the API returns when a PDF is uploaded
+class Document(BaseModel):
+    id: str
+    course_id: str
+    filename: str
+    page_count: int
+    message: list[str]    #extract text, one string per page
