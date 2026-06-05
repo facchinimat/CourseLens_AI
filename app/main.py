@@ -53,7 +53,7 @@ def get_course(course_id: str):
 async def upload_document(course_id: str, file: UploadFile = File(...)):
         if course_id not in courses:
             raise HTTPException(status_code=404, detail="Course not found")
-        if not file.filename.endswith(".pdf"):   #course doesnt exist so cant upload file
+        if not file.filename.endswith(".pdf"):   #checks if file is PDF format
             raise HTTPException(status_code=400, detail="Only PDF files are allowed")    #rejects non PDF uploads
         doc_id = str(uuid4()) # generate a unique ID for this document
 
@@ -68,11 +68,11 @@ async def upload_document(course_id: str, file: UploadFile = File(...)):
 
         # builds the Document object using schema
         document = Document(
-        id=doc_id,
-        course_id=course_id,
-        filename=file.filename,
-        page_count=len(pages),    #counts the pages
-        pages=pages
+        id = doc_id,
+        course_id = course_id,
+        filename = file.filename,
+        page_count = len(pages),    #counts the pages
+        message = "PDF uploaded and text extracted successfully"
         )
 
         #documents is a dict that maps each course id to a list of its documents. If course doesnt have any uploads yet, initialize its list first then append.

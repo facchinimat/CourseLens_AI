@@ -17,4 +17,4 @@ class Document(BaseModel):
     course_id: str
     filename: str
     page_count: int
-    message: list[str]    #extract text, one string per page
+    message: str    #extract text, one string per page
