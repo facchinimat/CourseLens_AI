@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File #framework, HTTPException handles error responses
 
-from uuid import uuid4   # generates a random unique ID for each course 
+from uuid import uuid4   # generates a random unique ID for each object 
+import json
+from pathlib import Path  # allows creating paths easier
 
 from app.schemas import CourseCreate, Course, Document #import CourseCreate and Course from schemas.py file
 
@@ -14,6 +16,13 @@ app = FastAPI(title="CourseLens AI")   # name of app
 courses: dict[str, Course] = {}   #*Note: data resets every time server restarts 
  # memory for documents / PDFs
 documents: dict[str, list[Document]] = {}
+
+#variables that point to /raw and /processed folders
+RAW_DATA_DIR = Path("data/raw")
+PROCESSED_DATA_DIR = Path("data/processed")
+
+RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)  #creates a /data/raw folder if /data doesnt exist. if it does, then continue
+PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ENDPOINTS
 
@@ -57,7 +66,7 @@ async def upload_document(course_id: str, file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Only PDF files are allowed")    #rejects non PDF uploads
         doc_id = str(uuid4()) # generate a unique ID for this document
 
-        file_path = f"data/raw/{doc_id}_{file.filename}" #builds a path for the raw PDF to be saved ( prevents overwriting )
+        file_path = RAW_DATA_DIR / f"{doc_id}_{file.filename}" #builds a path for the raw PDF to be saved ( prevents overwriting )
 
         #reads all bytes from the uploaded file and saves PDF into raw folder
         contents = await file.read()
@@ -65,6 +74,20 @@ async def upload_document(course_id: str, file: UploadFile = File(...)):
             f.write(contents)
 
         pages = extract_text_by_page(file_path)
+
+
+        processed_data = {
+             "document_id": doc_id,
+             "course_id": course_id,
+             "filename": file.filename,
+             "page_count":len(pages),
+             "pages": pages
+        }
+
+        processed_file_path = PROCESSED_DATA_DIR / f"{doc_id}.json"
+
+        with open(processed_file_path, "w", encoding = "utf-8") as f:
+             json.dump(processed_data,f, indent = 4, ensure_ascii = False)  #add python dict ( document content ) into a JSON file for later chunking - function
 
         # builds the Document object using schema
         document = Document(
