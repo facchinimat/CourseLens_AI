@@ -33,7 +33,8 @@ def create_course(course_data: CourseCreate):
     return course           # return the new course ( with ID )
 
 # retrieves all courses currently stored
-@app.get("/courses")
+# response_model=list[Course] ensures every item in the returned list matches the Course schema
+@app.get("/courses", response_model=list[Course])
 def get_courses():
     return list(courses.values())   # get all course objects from the dictionary ( converts into JSON array )
 
