@@ -4,6 +4,8 @@ __pycache__/
 .env
 data/raw/*
 data/processed/*
+data/chunks/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/chunks/.gitkeep
 uploads/
