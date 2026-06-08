@@ -11,10 +11,28 @@ class Course(BaseModel):
     name: str
     description: str | None = None
 
-# what the API returns when a PDF is uploaded
+# what the API returns when a PDF is uploaded and requested
 class Document(BaseModel):
     id: str
     course_id: str
     filename: str
     page_count: int
     message: str    #extract text, one string per page
+
+#definition on how chunck should look like / represent for objects
+class Chunk(BaseModel):
+    chunk_id: str
+    course_id: str
+    document_id:str
+    filename: str
+    page_number: int
+    chunk_index: int
+    text: str
+
+#response model for API when chunks for PDF are created
+class ChunkCreationResponse(BaseModel):
+    document_id: str
+    course_id: str
+    filename: str
+    chunk_count: int
+    message: str

@@ -4,7 +4,7 @@ from uuid import uuid4   # generates a random unique ID for each object
 import json
 from pathlib import Path  # allows creating paths easier
 
-from app.schemas import CourseCreate, Course, Document #import CourseCreate and Course from schemas.py file
+from app.schemas import CourseCreate, Course, Document, Chunk, ChunkCreationResponse #import CourseCreate and Course from schemas.py file
 
 from app.pdf_utils import extract_text_by_page
 
@@ -24,7 +24,15 @@ PROCESSED_DATA_DIR = Path("data/processed")
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)  #creates a /data/raw folder if /data doesnt exist. if it does, then continue
 PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+#path variables to chunk folder
+CHUNKS_DATA_DIR = Path("data/chunks")
+CHUNKS_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 # ENDPOINTS
+
+@app.get("/")
+def root():
+    return {"message": "Welcome to CourseLens AI"}
 
 # check if server is running
 @app.get("/health")
@@ -104,9 +112,165 @@ async def upload_document(course_id: str, file: UploadFile = File(...)):
         documents[course_id].append(document)
         return document   # return document as the response
 
-
+#retrives documents uploaded using course ID
 @app.get("/courses/{course_id}/documents", response_model=list[Document])
 def get_documents(course_id: str):  #take course ID from URL
         if course_id not in courses:
             raise HTTPException(status_code=404, detail="Course not found")
         return documents.get(course_id, [])  # returns list of documents for specific course, if none return an empty list
+
+
+#Creates a POST endpoint that generates chunks for a specific document inside a specific course
+@app.post("/courses/{course_id}/documents/{document_id}/chunks",  response_model=ChunkCreationResponse)
+def create_document_chunks(course_id: str, document_id: str):   # FastAPI gets course_id and document_id from the URL as strings
+    if course_id not in courses:
+        raise HTTPException(status_code=404, detail="Course not found")  #checks if course ID is in dictionary of courses
+
+    # extract documents from a course ( in list ), if none return empty list ( prevents errors )
+    course_documents = documents.get(course_id, [])
+    document_exists = any(doc.id == document_id for doc in course_documents) # Check whether any document in this course has the matching document_id
+
+    if not document_exists:
+        raise HTTPException(status_code=404, detail="Document not found for this course")  #if document doesnt exist raise and error
+
+    chunks = create_chunks_from_processed_file(document_id)  # Load the processed JSON file for this document, split each page's text into chunks, and return a list of Chunk objects
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No chunks could be created from this document")   #if chunks list empty, then raise an error
+
+    if chunks[0].course_id != course_id:
+        raise HTTPException(status_code=400, detail="Document does not belong to this course") #extra safety measure to make sure the chunks were created from a document belonging to this course
+
+    #creates a path to store chunks data, file is JSON format using document ID
+    chunks_file_path = CHUNKS_DATA_DIR / f"{document_id}_chunks.json"
+
+    #creates a chunks data dictionary. includes chunks and metadata
+    chunks_data = {
+        "document_id": document_id,              #metadata
+        "course_id": course_id,                  #metadata
+        "filename": chunks[0].filename,          #metadata
+        "chunk_count": len(chunks),              #metadata
+        "chunks": [chunk.model_dump() for chunk in chunks]  #Convert each Chunk Pydantic object into a normal Python dictionary so it can be saved into JSON.
+        #Create a list of dictionaries, where each dictionary is one chunk.
+    }
+
+    #Save the chunks_data Python dictionary into a JSON file inside data/chunks/
+    with open(chunks_file_path, "w", encoding="utf-8") as f:
+        json.dump(chunks_data, f, indent=4, ensure_ascii=False)
+
+    #return response to API for user to see. matches schemas.py 
+    return {
+        "document_id": document_id,
+        "course_id": course_id,
+        "filename": chunks[0].filename,
+        "chunk_count": len(chunks),
+        "message": "Chunks created successfully"
+    }
+
+#creates a endpoint for user to access chunks from PDF
+@app.get("/courses/{course_id}/documents/{document_id}/chunks", response_model=list[Chunk])
+def get_document_chunks(course_id: str, document_id: str): #API uses course id and document ID from URL as input
+
+    #checks if course is in courses dictionary
+    if course_id not in courses:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    #creates a file path to chunks folder for data, file is JSON 
+    chunks_file_path = CHUNKS_DATA_DIR / f"{document_id}_chunks.json"
+
+    if not chunks_file_path.exists():
+        raise HTTPException(status_code=404, detail="Chunks not found for this document")  #checks if specific chunks JSON file exists in folder
+
+    with open(chunks_file_path, "r", encoding="utf-8") as f:
+        chunks_data = json.load(f)   #open JSON file chunks and load it into a python dictionary
+
+    if chunks_data["course_id"] != course_id:
+        raise HTTPException(status_code=400, detail="Document does not belong to this course")
+
+    return chunks_data["chunks"]   #return the list of chunks from PDF file as python dictionary. ( FastAPI checks that each chunk matches Chunk schema )
+
+# function helper to chunk large text
+def chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[str]:    # text is the extracted text from one page. chunk_size = maximum number of characters per chunk, needed to make sure context is preserved. Returns a list of text chunks 
+
+    #checks that we can advance each text properly and no errors
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be smaller than chunk_size")
+
+    #creates a chunks list to save all chunks from a text
+    chunks = []
+
+    #if there is not text, return empty chunks list
+    if not text:
+        return chunks
+
+    #start of page, first letter. Index of first character in page starts at 0
+    start = 0
+
+    #continue chunking the text while there is text
+    while start < len(text):
+        end = start + chunk_size   #end = upper limit, start = lower limit for text chunk ( overlap of 100 characters )
+
+        chunk = text[start:end].strip()  #removes extra space and newlines ( only beginning and end of text )
+
+        #if the chunk is not empty, then append chunk to chunks list
+        if chunk:
+            chunks.append(chunk)
+
+        start += chunk_size - overlap  #increment to next characters in page 
+
+    return chunks   # return list of chunks for this page
+
+
+#function to create chunks from a processed JSON PDF file.
+#input is document ID. Returns a list of chunks from a PDF file
+def create_chunks_from_processed_file(document_id: str) -> list[Chunk]:
+
+    #creates file path to processed data folder to get specific document JSON file
+    processed_file_path = PROCESSED_DATA_DIR / f"{document_id}.json"
+
+
+    #if the file doesnt exist raise an error
+    if not processed_file_path.exists():
+        raise HTTPException(status_code=404, detail="Processed document file not found")
+
+    #open the processed JSON file and load it into python dictionary 
+    with open(processed_file_path, "r", encoding="utf-8") as f:
+        processed_data = json.load(f)
+
+    #extract course ID, filename and text ( pages ) from processed JSON dictionary
+    course_id = processed_data["course_id"]
+    filename = processed_data["filename"]
+    pages = processed_data["pages"]
+
+    #creates a chunks list to save all chunks from PDF
+    all_chunks = []
+
+    #iterates through each page in pages dictionary file
+    for page in pages:
+
+        page_number = page["page_number"]   #save page number from specific file page
+        page_text = page["text"] #save all text from page
+
+        #split this page's text into smaller text chunks
+        text_chunks = chunk_text(page_text)
+
+        #Loop through each text chunk from this page and give it an index
+        for chunk_index, chunk in enumerate(text_chunks):
+
+            #generates a unique id for one chunk in a page
+            chunk_id = f"{document_id}_p{page_number}_c{chunk_index}"
+
+            #creates one chunk object that contains text chunk and metadata. Matches chunk schemas. Contains unique chunk ID for Chroma DB
+            chunk_obj = Chunk(
+                chunk_id=chunk_id,
+                course_id=course_id,
+                document_id=document_id,
+                filename=filename,
+                page_number=page_number,
+                chunk_index=chunk_index,
+                text=chunk
+            )
+
+            all_chunks.append(chunk_obj)  #append chunk to chunks list
+
+    return all_chunks     #return all chunks from a processed JSON file
