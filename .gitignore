@@ -2,10 +2,15 @@
 __pycache__/
 *.pyc
 .env
+
 data/raw/*
 data/processed/*
 data/chunks/*
+data/chroma/*
+
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/chunks/.gitkeep
+!data/chroma/.gitkeep
+
 uploads/
