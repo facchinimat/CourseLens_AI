@@ -1,84 +1,42 @@
 # CourseLens AI
 
-CourseLens AI is an AI-powered course document assistant that lets students upload course PDFs, extract text, chunk the material, create vector embeddings, and semantically search course content using natural language.
+CourseLens AI is an AI-powered course document assistant that lets students upload course PDFs and ask natural-language questions about their course material. The app extracts text from PDFs, chunks the content, creates vector embeddings, stores searchable document chunks in ChromaDB, retrieves the most relevant sources, and generates AI answers with source citations.
 
+The goal of this project is to build a practical RAG-based study assistant for students.
+
+---
 
 ## Demo Flow
 
-1. Create a course.
-2. Upload a course PDF.
-3. Extract text from the PDF page by page.
-4. Split extracted text into smaller chunks.
-5. Generate OpenAI embeddings for each chunk.
-6. Store vectors, text, and metadata in Chroma.
-7. Search the course material using natural language.
+### User-Facing Flow
 
-Example query:
+1. Create or select a course.
+2. Upload one or more course PDFs.
+3. CourseLens automatically processes the PDF in the background.
+4. Ask a question in the chat interface.
+5. Receive an AI-generated answer grounded in the uploaded documents.
+6. View source citations showing the filename and page number used.
+
+Example question:
 
 ```text
-When are midterms?
+What is the grading scheme?
 ```
 
-Example returned result:
+Example answer:
 
-```json
-{
-  "filename": "CSE220_Syllabus_SPR2026.pdf",
-  "page_number": 6,
-  "text": "Students must take three in-person, cumulative midterm exams...",
-  "distance": 1.061
-}
+```text
+The grading scheme includes three midterm exams worth 54% of the final grade, homework worth 16%, programming assignments worth 15%, and a final exam worth 15%.
+
+Sources:
+[1] Class_Syllabus.pdf — Page 8
 ```
 
 ---
 
-## Features
+## What CourseLens AI Does
 
-### Completed
-
-* FastAPI backend with automatic API docs
-* Course creation and retrieval
-* PDF upload by course
-* Raw PDF storage
-* Page-level PDF text extraction using PyMuPDF
-* Processed JSON storage for extracted text
-* Text chunking with overlap
-* Chunk metadata preservation
-* Chroma vector database integration
-* OpenAI embedding generation
-* Semantic search over indexed course documents
-* Source metadata returned with search results, including filename and page number
-
-### In Progress / Planned
-
-* LLM-generated answers using retrieved chunks
-* Citation-based AI tutor responses
-* Quiz generation from course material
-* Weak-area tracking
-* Streamlit frontend
-* Persistent database for courses/documents
-* Better error handling and test coverage
-* Docker setup
-
----
-
-## Tech Stack
-
-| Layer                 | Technology         |
-| --------------------- | ------------------ |
-| Backend               | FastAPI            |
-| Language              | Python             |
-| PDF Processing        | PyMuPDF            |
-| Data Validation       | Pydantic           |
-| Embeddings            | OpenAI Embeddings  |
-| Vector Database       | ChromaDB           |
-| Environment Variables | python-dotenv      |
-| API Testing           | FastAPI Swagger UI |
-| Version Control       | Git / GitHub       |
-
----
-
-## Architecture
+CourseLens AI follows a Retrieval-Augmented Generation pipeline:
 
 ```text
 PDF Upload
@@ -91,14 +49,35 @@ Save Processed JSON
    ↓
 Chunk Text with Metadata
    ↓
-Generate Embeddings
+Generate OpenAI Embeddings
    ↓
-Store in Chroma Vector Database
+Store Text, Vectors, and Metadata in ChromaDB
    ↓
-Semantic Search
+Retrieve Relevant Chunks
    ↓
-Future: LLM Answer with Citations
+Send Retrieved Context to LLM
+   ↓
+Generate Answer with Sources
 ```
+
+---
+
+## Tech Stack
+
+| Layer                 | Technology         |
+| --------------------- | ------------------ |
+| Backend               | FastAPI            |
+| Language              | Python             |
+| Frontend              | Streamlit          |
+| PDF Processing        | PyMuPDF            |
+| Data Validation       | Pydantic           |
+| Embeddings            | OpenAI Embeddings  |
+| Answer Generation     | OpenAI LLM         |
+| Vector Database       | ChromaDB           |
+| Local Persistence     | JSON files         |
+| Environment Variables | python-dotenv      |
+| API Testing           | FastAPI Swagger UI |
+| Version Control       | Git / GitHub       |
 
 ---
 
@@ -108,16 +87,18 @@ Future: LLM Answer with Citations
 CourseLens_AI/
 │
 ├── app/
-│   ├── main.py              # FastAPI app and API endpoints
-│   ├── schemas.py           # Pydantic data models
+│   ├── main.py              # FastAPI app, API endpoints, RAG pipeline
+│   ├── schemas.py           # Pydantic request/response models
 │   └── pdf_utils.py         # PDF text extraction helper
 │
 ├── data/
 │   ├── raw/                 # Uploaded PDFs
 │   ├── processed/           # Extracted page-level JSON files
 │   ├── chunks/              # Chunked document JSON files
-│   └── chroma/              # Local Chroma vector database
+│   ├── chroma/              # Local Chroma vector database
+│   └── app/                 # Local JSON metadata persistence
 │
+├── streamlit_app.py         # Temporary Streamlit chat UI
 ├── .env                     # API keys, not committed to GitHub
 ├── .gitignore
 ├── requirements.txt
@@ -150,8 +131,8 @@ Example request:
 
 ```json
 {
-  "name": "CSE 220",
-  "description": "Systems Fundamentals I"
+  "name": "Intro to Programming",
+  "description": "Python"
 }
 ```
 
@@ -163,7 +144,7 @@ Example request:
 GET /courses
 ```
 
-Returns all created courses.
+Returns all saved courses.
 
 ---
 
@@ -183,7 +164,7 @@ Returns one course by its unique ID.
 POST /courses/{course_id}/documents
 ```
 
-Uploads a PDF to a course, saves the raw file, extracts text, and stores page-level processed JSON.
+Uploads a PDF to a course, saves the raw file, extracts page-level text, and stores processed JSON.
 
 ---
 
@@ -217,13 +198,13 @@ Returns all chunks for a document.
 
 ---
 
-### Index Chunks into Chroma
+### Index Chunks into ChromaDB
 
 ```http
 POST /courses/{course_id}/documents/{document_id}/index
 ```
 
-Creates embeddings for each chunk and stores them in Chroma with metadata.
+Creates embeddings for each chunk and stores chunk IDs, vectors, text, and metadata in ChromaDB.
 
 ---
 
@@ -233,7 +214,7 @@ Creates embeddings for each chunk and stores them in Chroma with metadata.
 POST /courses/{course_id}/search
 ```
 
-Searches indexed course chunks using a natural language query.
+Searches indexed course chunks using a natural-language query.
 
 Example request:
 
@@ -251,13 +232,41 @@ Example response:
   {
     "chunk_id": "document123_p6_c2",
     "document_id": "document123",
-    "filename": "CSE220_Syllabus.pdf",
+    "filename": "class_Syllabus.pdf",
     "page_number": 6,
     "chunk_index": 2,
     "text": "Students must take three in-person, cumulative midterm exams...",
     "distance": 1.061
   }
 ]
+```
+
+---
+
+### Ask CourseLens AI
+
+```http
+POST /courses/{course_id}/ask
+```
+
+Retrieves the most relevant chunks from ChromaDB, formats them as context, sends them to an OpenAI LLM, and returns an AI-generated answer with source metadata.
+
+Example request:
+
+```json
+{
+  "question": "What is the grading scheme?",
+  "top_k": 5
+}
+```
+
+Example response:
+
+```json
+{
+  "answer": "The grading scheme includes three midterm exams worth 54% of the final grade, homework worth 16%, programming assignments worth 15%, and a final exam worth 15%.",
+  "sources": " ... "
+}
 ```
 
 ---
@@ -279,13 +288,13 @@ cd CourseLens_AI
 python -m venv .venv
 ```
 
-Activate it:
+Activate it on Windows Git Bash:
 
 ```bash
 source .venv/Scripts/activate
 ```
 
-On Mac/Linux:
+Activate it on Mac/Linux:
 
 ```bash
 source .venv/bin/activate
@@ -313,7 +322,7 @@ Do not commit this file to GitHub.
 
 ---
 
-### 5. Run the Server
+### 5. Run the FastAPI Backend
 
 ```bash
 python -m uvicorn app.main:app --reload
@@ -327,31 +336,33 @@ http://127.0.0.1:8000/docs
 
 ---
 
-## Local Data and Privacy
+### 6. Run the Streamlit UI
 
-This project stores local development files in the `data/` folder:
+In a second terminal, run:
 
-```text
-data/raw/         Uploaded PDFs
-data/processed/   Extracted page text
-data/chunks/      Chunked document text
-data/chroma/      Local vector database files
+```bash
+streamlit run streamlit_app.py
 ```
 
-These files are ignored by Git to avoid uploading private course documents, extracted text, embeddings, or API-related data.
-
-The repository tracks only `.gitkeep` files to preserve the folder structure.
+The Streamlit app provides a temporary user interface for creating/selecting courses, uploading PDFs, and chatting with course documents.
 
 ---
 
-## Current Limitations
+## Local Data and Privacy
 
-* Course and document metadata are stored in memory, so they reset when the server restarts.
-* The current system returns relevant chunks, not full AI-generated answers yet.
-* Search quality depends on PDF text extraction and chunk quality.
-* Chroma data is stored locally for development.
-* No frontend has been added yet.
-* No authentication or user accounts yet.
+This project stores local development data inside the `data/` folder:
+
+```text
+data/raw/          Uploaded PDFs
+data/processed/    Extracted page-level text
+data/chunks/       Chunked document text
+data/chroma/       Local ChromaDB vector database files
+data/app/          Local course and document metadata JSON files
+```
+
+These files are ignored by Git to avoid uploading private course documents, extracted text, embeddings, metadata, or API-related data.
+
+The repository only tracks `.gitkeep` files to preserve the folder structure.
 
 ---
 
@@ -379,24 +390,34 @@ The repository tracks only `.gitkeep` files to preserve the folder structure.
 ### Phase 4: Embeddings and Search
 
 * Generate OpenAI embeddings
-* Store chunks in Chroma
+* Store chunks in ChromaDB
 * Add semantic search endpoint
 
 ### Phase 5: RAG Answer Generation
 
 * Retrieve top chunks
 * Send chunks and user question to an LLM
-* Generate answers with citations
+* Generate source-grounded answers
+* Return filename and page number citations
 * Handle “answer not found in source” cases
 
-### Phase 6: Product Polish
+### Phase 6: Persistence and Product UI
 
-* Streamlit frontend
-* Persistent database
-* Testing
-* Dockerization
-* Deployment
-* Demo video
+* Persist courses and document metadata with JSON
+* Add temporary Streamlit UI
+* Hide backend processing steps from the user
+* Build a cleaner chat-based interface
+
+### Phase 7: Product Polish
+
+* Add delete document and delete course functionality
+* Add update course functionality
+* Add quiz and flashcard generation
+* Add weak-topic tracking
+* Add tests
+* Add Docker support
+* Deploy backend and frontend
+* Add screenshots and demo video
 
 ---
 
@@ -408,27 +429,31 @@ Through this project, I learned how to:
 * Use Pydantic schemas for request and response validation
 * Process uploaded PDF files in Python
 * Store raw, processed, and chunked document data
-* Design a basic RAG-style document pipeline
+* Design a RAG-style document assistant
 * Generate embeddings using OpenAI
-* Store and query vectors using Chroma
+* Store and query vectors using ChromaDB
 * Preserve metadata for source citations
-* Debug API errors, schema mismatches, and vector search issues
+* Build an `/ask` endpoint that retrieves relevant chunks before generating an answer
+* Use prompt instructions to reduce hallucinations and keep answers grounded in uploaded documents
+* Add local JSON persistence for course and document metadata
+* Build a basic Streamlit interface connected to a FastAPI backend
+* Debug API errors, schema mismatches, vector search issues, and LLM response issues
 * Use Git and GitHub for version control
 
 ---
 
-
 ## Future Improvements
 
-* Add LLM-generated tutor answers with citations
+* Improve the Streamlit UI into a polished chat experience
+* Add clickable source citations
+* Add document and course deletion
+* Add course update/editing
 * Add quiz and flashcard generation
 * Add weak-topic tracking based on student questions
-* Add Streamlit frontend
-* Store courses and documents in SQLite or PostgreSQL
+* Store courses and documents in SQLite, PostgreSQL, or Supabase
 * Add automated tests with pytest
 * Add Docker support
-* Deploy backend and frontend
-* Add screenshots and demo video
+* Deploy the app
 
 ---
 
