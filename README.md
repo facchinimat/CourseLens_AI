@@ -459,6 +459,9 @@ Through this project, I learned how to:
 
 ## Author
 
-Matteo Facchini
-Computer Science Student, Stony Brook University
-Project: CourseLens AI
+**Matteo Facchini**  
+Computer Science Student at **Stony Brook University**  
+Building practical software and AI projects
+
+- LinkedIn: [Matteo Facchini](https://www.linkedin.com/in/matteo-facchini-b14667352/)
+
