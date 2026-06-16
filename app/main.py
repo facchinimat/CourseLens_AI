@@ -7,7 +7,7 @@ from uuid import uuid4
 import json
 from pathlib import Path
 
-from app.schemas import CourseCreate, Course, Document, Chunk, SearchResult, SearchRequest, ChunkCreationResponse 
+from app.schemas import CourseCreate, Course, Document, Chunk, SearchResult, SearchRequest, ChunkCreationResponse, AskRequest, Source, AskResponse 
 
 from app.pdf_utils import extract_text_by_page
 
@@ -382,22 +382,53 @@ def index_document_chunks(course_id: str, document_id: str):
 
 @app.post("/courses/{course_id}/search", response_model=list[SearchResult])
 def search_course_chunks(course_id: str, search_request: SearchRequest):
+    return retrieve_course_chunks(
+        course_id=course_id,
+        query=search_request.query,
+        top_k=search_request.top_k
+    )
+
+
+#sends text chunks to openai to return vectors of text 
+def create_embeddings(texts: list[str]) -> list[list[float]]: #takes texts ( list of strings ). And function returns a list of lists of floats. each page could have more than 1 text chunk, so it has to return a list of list of floats to represents vectors of each text chunk in each page. 
+
+    #checks if texts is empty 
+    if not texts:
+        return []
+    
+    #sends list of text chunks to openai embedding model
+    response = openai_client.embeddings.create(  #openai_client is how python code communicates with OpenAI
+        model = EMBEDDING_MODEL,
+        input = texts
+    )
+
+    embeddings = []
+
+    # takes each chunk vector and appends it to embedding list
+    for item in response.data:
+        embeddings.append(item.embedding)
+
+    return embeddings
+
+
+# retrieves most relevant chunks for user's question
+def retrieve_course_chunks(course_id: str, query: str, top_k: int = 5) -> list[SearchResult]:
     # Check if the course exists in memory
     if course_id not in courses:
         raise HTTPException(status_code=404, detail="Course not found")
 
     # Clean the user's query
-    query = search_request.query.strip()
+    question = query.strip()
 
     # Make sure the query is not empty
-    if not query:
+    if not question:
         raise HTTPException(status_code=400, detail="Search query cannot be empty")
 
     # Limit results to 1 - 10 only
-    top_k = max(1, min(search_request.top_k, 10))
+    top_k = max(1, min(top_k, 10))
 
-    # Create an embedding for the user's search query
-    query_embedding = create_embeddings([query])[0]
+    # convert the user's question into an embedding vector
+    query_embedding = create_embeddings([question])[0]
 
     # Search Chroma for the most similar chunks in this course
     results = chunks_collection.query(
@@ -433,28 +464,94 @@ def search_course_chunks(course_id: str, search_request: SearchRequest):
 
     return search_results
 
+#convert retrieved chunks into a clean text context for LLM
+#The LLM receives readable source text, not embedding vectors
+#Each chunk includes filename and page number so the model can answer with source awareness
+def format_chunks_prompt(chunks: list[SearchResult]) -> str:
+    context = []
 
-
-
-#sends text chunks to openai to return vectors of text 
-def create_embeddings(texts: list[str]) -> list[list[float]]: #takes texts ( list of strings ). And function returns a list of lists of floats. each page could have more than 1 text chunk, so it has to return a list of list of floats to represents vectors of each text chunk in each page. 
-
-    #checks if texts is empty 
-    if not texts:
-        return []
+    for i, chunk in enumerate(chunks, start = 1):
+        context.append(
+            f"source {i}:\n"
+            f"filename: {chunk.filename}\n"
+            f"page: {chunk.page_number}\n"
+            f"text: {chunk.text}\n"
+        )
     
-    #sends list of text chunks to openai embedding model
-    response = openai_client.embeddings.create(  #openai_client is how python code communicates with OpenAI
-        model = EMBEDDING_MODEL,
-        input = texts
+    return "\n\n".join(context)
+
+# OpenAI model used to generate final answers from retrieved context
+ANSWER_MODEL = "gpt-4.1-mini"
+
+#Generate a final answer using the user's question and retrieved source chunks
+#The prompt tells the model to only use the provided sources. This reduces hallucinations (generation part of RAG ). Sends users question and sources for answer
+def generate_answer(question: str, context: str) -> str:
+    response = openai_client.responses.create(
+        model = ANSWER_MODEL,
+        input = f"""
+You are CourseLens AI, a course document assistant.
+
+Answer the student's question using only the provided sources.
+Do not use outside knowledge.
+If the sources do not contain enough information, say:
+"The uploaded documents do not provide enough information to answer this."
+
+When possible, mention the filename and page number from the sources.
+
+Question:
+{question}
+
+Sources:
+{context}
+"""
+
     )
 
-    embeddings = []
-
-    # takes each chunk vector and appends it to embedding list
-    for item in response.data:
-        embeddings.append(item.embedding)
-
-    return embeddings
+    return response.output_text  #reposnse has metadata and text, only return LLM text 
 
 
+# Creates the main RAG question-answering endpoint for a specific course.
+# This endpoint retrieves relevant document chunks, generates an answer, and returns source metadata.
+@app.post("/courses/{course_id}/ask", response_model = AskResponse)
+def ask_course_question(course_id: str, ask_request: AskRequest):
+    # Retrieve the most relevant chunks from Chroma based on the user's question.
+    # The course_id filters the search to documents belonging to the selected course.
+    retrieved_chunks = retrieve_course_chunks(
+        course_id = course_id,
+        query = ask_request.question,
+        top_k = ask_request.top_k
+        
+    )
+
+    # If no relevant chunks are found, stop the request and return a clear error response.
+    if not retrieved_chunks:
+        raise HTTPException(status_code = 404, detail = "No relevant chunks found")
+    
+    # Convert the retrieved chunks into a formatted text context for the LLM.
+    # This context includes source text, filenames, and page numbers.
+    context = format_chunks_prompt(retrieved_chunks)
+
+    # Generate a final answer using the user's question and the retrieved document context.
+    answer = generate_answer(
+        question = ask_request.question,
+        context = context
+    )
+
+    # Build a list of source metadata from the retrieved chunks.
+    # These sources show where the answer came from without returning full chunk text again.
+    sources = [
+        Source(
+            chunk_id = chunk.chunk_id,
+            document_id= chunk.document_id,
+            filename = chunk.filename,
+            page_number = chunk.page_number,
+            chunk_index = chunk.chunk_index
+        )
+        for chunk in retrieved_chunks
+    ]
+
+    # Return the generated answer along with the source metadata.
+    return AskResponse(
+        answer = answer,
+        sources = sources
+    )
