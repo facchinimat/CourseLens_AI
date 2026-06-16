@@ -7,10 +7,12 @@ data/raw/*
 data/processed/*
 data/chunks/*
 data/chroma/*
+data/app/*.json
 
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/chunks/.gitkeep
 !data/chroma/.gitkeep
+!data/app/.gitkeep
 
 uploads/

@@ -13,22 +13,99 @@ from app.pdf_utils import extract_text_by_page
 
 app = FastAPI(title="CourseLens AI")
 
+# Local data folders
+RAW_DATA_DIR = Path("data/raw")
+PROCESSED_DATA_DIR = Path("data/processed")
+CHUNKS_DATA_DIR = Path("data/chunks")
+CHROMA_DATA_DIR = Path("data/chroma")
+APP_DATA_DIR = Path("data/app")
+
+COURSES_FILE = APP_DATA_DIR / "courses.json"
+DOCUMENTS_FILE = APP_DATA_DIR / "documents.json"
+
+RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+CHUNKS_DATA_DIR.mkdir(parents=True, exist_ok=True)
+CHROMA_DATA_DIR.mkdir(parents=True, exist_ok=True)
+APP_DATA_DIR.mkdir(parents = True, exist_ok=True)
 
 # In-memory storage. Data resets every time the server restarts.
 courses: dict[str, Course] = {}
 documents: dict[str, list[Document]] = {}
 
 
-# Local data folders
-RAW_DATA_DIR = Path("data/raw")
-PROCESSED_DATA_DIR = Path("data/processed")
-CHUNKS_DATA_DIR = Path("data/chunks")
-CHROMA_DATA_DIR = Path("data/chroma")
+# JSON PERSISTENCE HELPERS
 
-RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
-PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-CHUNKS_DATA_DIR.mkdir(parents=True, exist_ok=True)
-CHROMA_DATA_DIR.mkdir(parents=True, exist_ok=True)
+#Save all courses from memory into a local JSON file. courses is a dictionary of Course objects. JSON cannot directly store Pydantic objects, so each Course is converted into a normal Python dictionary using model_dump().
+def save_courses_to_disk() -> None:
+
+    courses_data = {
+        course_id: course.model_dump()
+        for course_id, course in courses.items()
+    }
+
+    with open(COURSES_FILE, "w", encoding="utf-8") as f:
+        json.dump(courses_data, f, indent=4, ensure_ascii=False)
+
+
+def load_courses_from_disk() -> None:
+    """
+    Load saved courses from the local JSON file back into memory.
+
+    This runs when the server starts so courses are restored after restart.
+    """
+
+    if not COURSES_FILE.exists():
+        return
+
+    with open(COURSES_FILE, "r", encoding="utf-8") as f:
+        courses_data = json.load(f)
+
+    for course_id, course_dict in courses_data.items():
+        courses[course_id] = Course(**course_dict)
+
+
+def save_documents_to_disk() -> None:
+    """
+    Save all document metadata from memory into a local JSON file.
+
+    documents maps each course_id to a list of Document objects.
+    Each Document is converted into a dictionary before saving.
+    """
+
+    documents_data = {
+        course_id: [document.model_dump() for document in document_list]
+        for course_id, document_list in documents.items()
+    }
+
+    with open(DOCUMENTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(documents_data, f, indent=4, ensure_ascii=False)
+
+
+def load_documents_from_disk() -> None:
+    """
+    Load saved document metadata from the local JSON file back into memory.
+
+    This restores the documents dictionary after the server restarts.
+    """
+
+    if not DOCUMENTS_FILE.exists():
+        return
+
+    with open(DOCUMENTS_FILE, "r", encoding="utf-8") as f:
+        documents_data = json.load(f)
+
+    for course_id, document_list in documents_data.items():
+        documents[course_id] = [
+            Document(**document_dict)
+            for document_dict in document_list
+        ]
+
+# Restore saved courses and documents when the server starts
+load_courses_from_disk()
+load_documents_from_disk()
+
+
 
 
 # Load environment variables from .env
@@ -76,6 +153,10 @@ def create_course(course_data: CourseCreate):
     )
 
     courses[course_id] = course   #save the course in memory ( local )
+
+    #save updated courses dictionary to disk 
+    save_courses_to_disk()
+
     return course           # return the new course ( with ID )
 
 # retrieves all courses currently stored
@@ -135,6 +216,9 @@ async def upload_document(course_id: str, file: UploadFile = File(...)):
         if course_id not in documents:
             documents[course_id] = []
         documents[course_id].append(document)
+
+        save_documents_to_disk()
+
         return document   # return document as the response
 
 #retrievies documents uploaded using course ID
