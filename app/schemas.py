@@ -36,3 +36,18 @@ class ChunkCreationResponse(BaseModel):
     filename: str
     chunk_count: int
     message: str
+
+#What the user sends 
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+#what the API returns 
+class SearchResult(BaseModel):
+    chunk_id: str
+    document_id: str
+    filename: str
+    page_number: int
+    chunk_index: int
+    text: str
+    distance: float | None = None  #helps with debugging for relevance. Lower distance = more similar ( based on Chroma metrics )

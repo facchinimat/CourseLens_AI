@@ -1,32 +1,57 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File #framework, HTTPException handles error responses
-
-from uuid import uuid4   # generates a random unique ID for each object 
+from fastapi import FastAPI, HTTPException, UploadFile, File
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+import chromadb
+from uuid import uuid4
 import json
-from pathlib import Path  # allows creating paths easier
+from pathlib import Path
 
-from app.schemas import CourseCreate, Course, Document, Chunk, ChunkCreationResponse #import CourseCreate and Course from schemas.py file
+from app.schemas import CourseCreate, Course, Document, Chunk, SearchResult, SearchRequest, ChunkCreationResponse 
 
 from app.pdf_utils import extract_text_by_page
 
-app = FastAPI(title="CourseLens AI")   # name of app
+app = FastAPI(title="CourseLens AI")
 
 
-
-# memory that maps course ID to course objects 
-courses: dict[str, Course] = {}   #*Note: data resets every time server restarts 
- # memory for documents / PDFs
+# In-memory storage. Data resets every time the server restarts.
+courses: dict[str, Course] = {}
 documents: dict[str, list[Document]] = {}
 
-#variables that point to /raw and /processed folders
+
+# Local data folders
 RAW_DATA_DIR = Path("data/raw")
 PROCESSED_DATA_DIR = Path("data/processed")
-
-RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)  #creates a /data/raw folder if /data doesnt exist. if it does, then continue
-PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-#path variables to chunk folder
 CHUNKS_DATA_DIR = Path("data/chunks")
+CHROMA_DATA_DIR = Path("data/chroma")
+
+RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CHUNKS_DATA_DIR.mkdir(parents=True, exist_ok=True)
+CHROMA_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# Load environment variables from .env
+load_dotenv()
+
+if not os.getenv("OPENAI_API_KEY"):
+    raise RuntimeError("OPENAI_API_KEY is missing. Add it to your .env file.")
+
+
+# OpenAI client used for creating embeddings
+openai_client = OpenAI()
+
+
+# Chroma vector database setup
+chroma_client = chromadb.PersistentClient(path=str(CHROMA_DATA_DIR))
+
+chunks_collection = chroma_client.get_or_create_collection(
+    name="courselens_chunks"
+)
+
+
+# OpenAI embedding model used to turn chunk text into vectors
+EMBEDDING_MODEL = "text-embedding-3-small"
 
 # ENDPOINTS
 
@@ -54,7 +79,7 @@ def create_course(course_data: CourseCreate):
     return course           # return the new course ( with ID )
 
 # retrieves all courses currently stored
-@app.get("/courses")
+@app.get("/courses", response_model = list[Course])
 def get_courses():
     return list(courses.values())   # get all course objects from the dictionary ( converts into JSON array )
 
@@ -112,7 +137,7 @@ async def upload_document(course_id: str, file: UploadFile = File(...)):
         documents[course_id].append(document)
         return document   # return document as the response
 
-#retrives documents uploaded using course ID
+#retrievies documents uploaded using course ID
 @app.get("/courses/{course_id}/documents", response_model=list[Document])
 def get_documents(course_id: str):  #take course ID from URL
         if course_id not in courses:
@@ -274,3 +299,162 @@ def create_chunks_from_processed_file(document_id: str) -> list[Chunk]:
             all_chunks.append(chunk_obj)  #append chunk to chunks list
 
     return all_chunks     #return all chunks from a processed JSON file
+
+
+#Sematic Search for documents 
+
+
+@app.post("/courses/{course_id}/documents/{document_id}/index")
+def index_document_chunks(course_id: str, document_id: str):
+    # Check if the course exists in memory
+    if course_id not in courses:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    # Get all documents for this course
+    course_documents = documents.get(course_id, [])
+
+    # Check if this document belongs to this course
+    document_exists = any(doc.id == document_id for doc in course_documents)
+
+    if not document_exists:
+        raise HTTPException(status_code=404, detail="Document not found for this course")
+
+    # Build the path to the chunks JSON file
+    chunks_file_path = CHUNKS_DATA_DIR / f"{document_id}_chunks.json"
+
+    # Make sure chunks were already created
+    if not chunks_file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Chunks file not found. Create chunks before indexing."
+        )
+
+    # Load chunks JSON file into a Python dictionary
+    with open(chunks_file_path, "r", encoding="utf-8") as f:
+        chunks_data = json.load(f)
+
+    # Safety check: make sure this chunks file belongs to the course in the URL
+    if chunks_data["course_id"] != course_id:
+        raise HTTPException(status_code=400, detail="Chunks do not belong to this course")
+
+    # Get the list of chunk dictionaries
+    chunks = chunks_data["chunks"]
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No chunks found to index")
+
+    # Extract only the text from each chunk
+    texts = [chunk["text"] for chunk in chunks]
+
+    # Create embeddings for every chunk text
+    embeddings = create_embeddings(texts)
+
+    # Create list of unique IDs for Chroma
+    ids = [chunk["chunk_id"] for chunk in chunks]
+
+    # Create metadata for each chunk
+    metadatas = [
+        {
+            "course_id": chunk["course_id"],
+            "document_id": chunk["document_id"],
+            "filename": chunk["filename"],
+            "page_number": chunk["page_number"],
+            "chunk_index": chunk["chunk_index"]
+        }
+        for chunk in chunks
+    ]
+
+    # Store everything in Chroma
+    chunks_collection.upsert(
+        ids=ids,
+        embeddings=embeddings,
+        documents=texts,
+        metadatas=metadatas
+    )
+
+    return {
+        "course_id": course_id,
+        "document_id": document_id,
+        "indexed_count": len(chunks),
+        "message": "Chunks indexed successfully"
+    }
+
+
+@app.post("/courses/{course_id}/search", response_model=list[SearchResult])
+def search_course_chunks(course_id: str, search_request: SearchRequest):
+    # Check if the course exists in memory
+    if course_id not in courses:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    # Clean the user's query
+    query = search_request.query.strip()
+
+    # Make sure the query is not empty
+    if not query:
+        raise HTTPException(status_code=400, detail="Search query cannot be empty")
+
+    # Limit results to 1 - 10 only
+    top_k = max(1, min(search_request.top_k, 10))
+
+    # Create an embedding for the user's search query
+    query_embedding = create_embeddings([query])[0]
+
+    # Search Chroma for the most similar chunks in this course
+    results = chunks_collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k,
+        where={"course_id": course_id},
+        include=["documents", "metadatas", "distances"]
+    )
+
+    # Chroma returns nested lists because it supports multiple queries at once.
+    # Since we only searched one query, we use index [0].
+    ids = results["ids"][0]
+    documents_found = results["documents"][0]
+    metadatas = results["metadatas"][0]
+    distances = results["distances"][0]
+
+    search_results = []
+
+    for i, chunk_id in enumerate(ids):
+        metadata = metadatas[i]
+
+        search_result = SearchResult(
+            chunk_id=chunk_id,
+            document_id=metadata["document_id"],
+            filename=metadata["filename"],
+            page_number=metadata["page_number"],
+            chunk_index=metadata["chunk_index"],
+            text=documents_found[i],
+            distance=distances[i]
+        )
+
+        search_results.append(search_result)
+
+    return search_results
+
+
+
+
+#sends text chunks to openai to return vectors of text 
+def create_embeddings(texts: list[str]) -> list[list[float]]: #takes texts ( list of strings ). And function returns a list of lists of floats. each page could have more than 1 text chunk, so it has to return a list of list of floats to represents vectors of each text chunk in each page. 
+
+    #checks if texts is empty 
+    if not texts:
+        return []
+    
+    #sends list of text chunks to openai embedding model
+    response = openai_client.embeddings.create(  #openai_client is how python code communicates with OpenAI
+        model = EMBEDDING_MODEL,
+        input = texts
+    )
+
+    embeddings = []
+
+    # takes each chunk vector and appends it to embedding list
+    for item in response.data:
+        embeddings.append(item.embedding)
+
+    return embeddings
+
+
